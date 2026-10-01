@@ -61,13 +61,13 @@ sologsb-1114/
 │   ├── nginx.conf              # try_files 前端路由回落 + gzip
 │   ├── public/favicon.svg
 │   └── src/
-│       ├── types/              # cave.ts / segment.ts / station.ts / sketch.ts / index.ts
-│       ├── stores/             # caveStore / segmentStore / stationStore / sketchStore（Zustand）
+│       ├── types/              # cave.ts / segment.ts / station.ts / sketch.ts（含 Sheet 图幅） / index.ts
+│       ├── stores/             # caveStore / segmentStore / stationStore / sketchStore / sheetStore（Zustand）
 │       ├── components/common/  # SegmentTag / BearingInput / ClosureBadge / GridCanvas
 │       ├── hooks/              # usePersistentStore / useClosureCheck
 │       ├── pages/              # CavesPage / SegmentsPage / StationsPage / SketchPage / MergePage
 │       ├── router/index.ts
-│       └── utils/              # survey.ts / export.ts / id.ts
+│       └── utils/              # survey.ts / reconcile.ts（两侧对账） / export.ts / id.ts
 ```
 
 ## 五、数据模型与存储
@@ -78,9 +78,18 @@ sologsb-1114/
 | Segment 洞段 | 起止桩号、类型（竖井/廊道/厅堂/裂隙/水道）、平均宽高、是否闭合 | `segments` |
 | Station 测点 | 方位角、倾角、斜距 → 自动推算水平距/垂距，累计闭合差 | `stations` |
 | Sketch 草图 | 格数、比例、绘制人、拼合顺序号、桩号对齐锚点 | `sketches` |
+| Sheet 图幅 | **制图侧拼合成果**：拼合偏移、吸附、确认状态（待核/已确认）、对账快照、失败原因 | `sheets` |
+
+数据按测量侧 / 制图侧分别持有，任一侧改动只落本侧：
+
+- **测量侧**（caves / segments / stations）：洞段起止桩号是权威数据，复测改桩号只写 `segments`；
+- **制图侧**（sketches / sheets）：拼合偏移与吸附只写 `sheets`，不随测量侧改动静默改写；
+- 图幅对账时以快照记录拼合所依据的桩号：锚点是否落在当前洞段区间、桩号是否漂移、图幅代表长度与洞段实测长度是否一致、拼合总长与实测/已知总长是否一致；
+- 对不上的图幅留在「待核」，制图组可「按制图组这侧重来」（按当前桩号重算偏移并吸附），逐张确认后才进正式拼合；**已确认图幅不随对账回退**，桩号再变也只提示「测量侧桩号已变更」。
 
 - 数据库名 `gbcavesurvey`，`meta` 表保存 `schemaVersion`；
 - `version(2)` 升级迁移会把旧版测点记录由「斜距 + 倾角」补齐 `horizontalDistance` / `verticalDistance`；
+- `version(3)` 升级迁移会为每张旧草图补一条 `pending` 图幅记录（`source: 'legacy'` 初始图幅批次），旧草图一张不丢，全部进待核逐张确认；
 - 数据仅存于浏览器本地，容器无状态、不挂载命名卷，清除浏览器数据即清空。
 
 ## 六、主要页面
@@ -91,7 +100,7 @@ sologsb-1114/
 | `/segments` | 洞段编目表：按桩号区间/类型/洞穴筛选，批量调整洞段类型与闭合标记，自动累计总长 |
 | `/stations` | 测点读数录入：方位角/倾角专用输入（度分秒 ⇄ 十进制度），自动推算水平距垂距，实时闭合差徽标，异常读数整行高亮，支持连续录入下一站 |
 | `/sketch` | 草图工作台：坐标纸网格上绘制测点折线、标注桩号与倾角箭头，支持草图基准方位旋转与草图记录管理 |
-| `/merge` | 图幅拼合视图：拖动图幅按相邻边缘吸附、按桩号锚点一键对齐，输出可调整的拼合顺序表并支持 CSV 导出 |
+| `/merge` | 图幅拼合视图：待核图幅拖动吸附、按桩号锚点一键对齐、按新桩号重新对账（锚点区间 / 桩号漂移 / 图幅长度 / 两侧总长），对不上的留待核、「按制图组这侧重来」，逐张确认入正式拼合（已确认不回退），输出拼合顺序表并支持 CSV 导出 |
 
 ## 七、计算约定
 

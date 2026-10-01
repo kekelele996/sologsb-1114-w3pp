@@ -1,23 +1,24 @@
 import { onUnmounted, reactive } from 'vue'
 import type { StoreApi } from 'zustand/vanilla'
 import Dexie, { type Table } from 'dexie'
-import type { Cave, Segment, Sketch, Station } from '@/types'
+import type { Cave, Segment, Sheet, Sketch, Station } from '@/types'
 import { computeHorizontal, computeVertical } from '@/utils/survey'
 
 /** IndexedDB 数据结构版本号（升级迁移时使用） */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 四张表 + 元数据表 */
+/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 / 图幅 五张表 + 元数据表 */
 class CaveSurveyDb extends Dexie {
   caves!: Table<Cave, string>
   segments!: Table<Segment, string>
   stations!: Table<Station, string>
   sketches!: Table<Sketch, string>
+  sheets!: Table<Sheet, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -30,7 +31,7 @@ class CaveSurveyDb extends Dexie {
       meta: 'key'
     })
     // v2：旧版测点记录缺少水平距/垂距，迁移时由斜距 + 倾角补齐
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         caves: 'id, name, region, archived',
         segments: 'id, caveId, code, type',
@@ -50,6 +51,43 @@ class CaveSurveyDb extends Dexie {
               station.verticalDistance = computeVertical(station.dip, station.slopeDistance)
             }
           })
+      })
+    // v3：制图侧拼合记录独立为 sheets 图幅表。
+    // 旧版没有拼合记录，升级时把每张草图归到一张待确认的初始图幅里（source=legacy），
+    // 草图一张不丢，由制图组逐张对账确认后才进正式拼合。
+    this.version(SCHEMA_VERSION)
+      .stores({
+        caves: 'id, name, region, archived',
+        segments: 'id, caveId, code, type',
+        stations: 'id, segmentId, code, date',
+        sketches: 'id, segmentId, code, mergeOrder',
+        sheets: 'id, caveId, sketchId, status',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        const sketches = await tx.table<Sketch, string>('sketches').toArray()
+        const segments = await tx.table<Segment, string>('segments').toArray()
+        const now = new Date().toISOString()
+        const legacySheets: Sheet[] = sketches.map((sketch) => {
+          const segment = segments.find((item) => item.id === sketch.segmentId)
+          return {
+            id: `sheet_legacy_${sketch.id}`,
+            caveId: segment?.caveId ?? '',
+            sketchId: sketch.id,
+            source: 'legacy',
+            offset: 0,
+            snapped: false,
+            status: 'pending',
+            anchorStakeSnapshot: sketch.anchorStake ?? '',
+            segmentStartSnapshot: segment?.startStake ?? '',
+            segmentEndSnapshot: segment?.endStake ?? '',
+            mismatchReason: '',
+            stale: false,
+            confirmedAt: null,
+            createdAt: now
+          }
+        })
+        await tx.table<Sheet, string>('sheets').bulkPut(legacySheets)
       })
   }
 }
@@ -209,6 +247,42 @@ export async function seedDemoData(): Promise<void> {
       mergeOrder: 2,
       anchorStake: 'K0+120',
       imageNote: '竖井剖面草图，标注三处锚点'
+    }
+  ])
+
+  // 制图侧拼合图幅：演示数据直接已确认入正式拼合，快照与当前桩号一致
+  await db.sheets.bulkPut([
+    {
+      id: 'sheet_demo_001',
+      caveId,
+      sketchId: 'sk_demo_001',
+      source: 'manual',
+      offset: 0,
+      snapped: true,
+      status: 'confirmed',
+      anchorStakeSnapshot: 'K0+000',
+      segmentStartSnapshot: 'K0+000',
+      segmentEndSnapshot: 'K0+120',
+      mismatchReason: '',
+      stale: false,
+      confirmedAt: today,
+      createdAt: today
+    },
+    {
+      id: 'sheet_demo_002',
+      caveId,
+      sketchId: 'sk_demo_002',
+      source: 'manual',
+      offset: 192,
+      snapped: true,
+      status: 'confirmed',
+      anchorStakeSnapshot: 'K0+120',
+      segmentStartSnapshot: 'K0+120',
+      segmentEndSnapshot: 'K0+195',
+      mismatchReason: '',
+      stale: false,
+      confirmedAt: today,
+      createdAt: today
     }
   ])
 }

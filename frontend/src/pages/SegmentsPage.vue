@@ -8,12 +8,14 @@ import { useStore } from '@/hooks/usePersistentStore'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
+import { sheetStore } from '@/stores/sheetStore'
 import { stakeRangeOverlap, stakeToNumber } from '@/utils/survey'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const sheetState = useStore(sheetStore)
 
 const filterCaveId = ref<string>('')
 const filterType = ref<SegmentType | ''>('')
@@ -126,7 +128,14 @@ async function submit(): Promise<void> {
   }
   await segmentStore.getState().save(segment)
   dialogVisible.value = false
-  ElMessage.success(existing ? '洞段已更新' : '洞段已建立')
+  // 测量侧桩号变更只落测量侧；若该洞穴已有制图侧图幅，提示制图组按新桩号重新对账（不自动改图幅）
+  const stakeChanged =
+    existing && (existing.startStake !== segment.startStake || existing.endStake !== segment.endStake)
+  if (stakeChanged && sheetState.sheets.some((sheet) => sheet.caveId === segment.caveId)) {
+    ElMessage.warning('洞段桩号已变更，制图侧拼合图幅需按新桩号重新对账')
+  } else {
+    ElMessage.success(existing ? '洞段已更新' : '洞段已建立')
+  }
 }
 
 async function applyBatchType(): Promise<void> {

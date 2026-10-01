@@ -1,6 +1,7 @@
 import { createStore } from 'zustand/vanilla'
 import type { Sketch } from '@/types'
 import { db, syncAll, syncDelete, syncPut } from '@/hooks/usePersistentStore'
+import { sheetStore } from '@/stores/sheetStore'
 
 export interface SketchState {
   sketches: Sketch[]
@@ -25,7 +26,9 @@ export const sketchStore = createStore<SketchState>((set, get) => ({
   },
   remove: async (id) => {
     await syncDelete(db.sketches, id)
-    await get().hydrate()
+    // 制图侧图幅依附草图存在，草图删除时连带清理对应图幅
+    await db.sheets.where('sketchId').equals(id).delete()
+    await Promise.all([get().hydrate(), sheetStore.getState().hydrate()])
   },
   reorder: async (orderedIds) => {
     const all = get().sketches
