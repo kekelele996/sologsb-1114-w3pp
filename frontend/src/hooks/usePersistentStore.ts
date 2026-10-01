@@ -1,23 +1,24 @@
 import { onUnmounted, reactive } from 'vue'
 import type { StoreApi } from 'zustand/vanilla'
 import Dexie, { type Table } from 'dexie'
-import type { Cave, Segment, Sketch, Station } from '@/types'
-import { computeHorizontal, computeVertical } from '@/utils/survey'
+import type { Cave, MapSheet, Segment, Sketch, Station } from '@/types'
+import { computeHorizontal, computeVertical, stakeToNumber } from '@/utils/survey'
 
 /** IndexedDB 数据结构版本号（升级迁移时使用） */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 四张表 + 元数据表 */
+/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图（测量侧 + 原始草图）/ 图幅（制图侧）+ 元数据表 */
 class CaveSurveyDb extends Dexie {
   caves!: Table<Cave, string>
   segments!: Table<Segment, string>
   stations!: Table<Station, string>
   sketches!: Table<Sketch, string>
+  sheets!: Table<MapSheet, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -30,7 +31,7 @@ class CaveSurveyDb extends Dexie {
       meta: 'key'
     })
     // v2：旧版测点记录缺少水平距/垂距，迁移时由斜距 + 倾角补齐
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         caves: 'id, name, region, archived',
         segments: 'id, caveId, code, type',
@@ -51,8 +52,74 @@ class CaveSurveyDb extends Dexie {
             }
           })
       })
+    // v3：新增制图侧自持的「图幅」表。旧数据没有拼合记录，
+    // 把每张洞穴下的旧草图归到一张待确认的初始图幅里，草图原记录保留不丢。
+    this.version(SCHEMA_VERSION)
+      .stores({
+        caves: 'id, name, region, archived',
+        segments: 'id, caveId, code, type',
+        stations: 'id, segmentId, code, date',
+        sketches: 'id, segmentId, code, mergeOrder',
+        sheets: 'id, caveId, segmentId, status, mergeOrder',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        const [segments, sketches] = await Promise.all([
+          tx.table<Segment, string>('segments').toArray(),
+          tx.table<Sketch, string>('sketches').toArray()
+        ])
+        const groups = new Map<string, Sketch[]>()
+        for (const sketch of sketches) {
+          const segment = segments.find((item) => item.id === sketch.segmentId)
+          const caveId = segment?.caveId ?? '__legacy_orphan__'
+          groups.set(caveId, [...(groups.get(caveId) ?? []), sketch])
+        }
+
+        const now = new Date().toISOString()
+        let order = 0
+        const legacySheets: MapSheet[] = []
+        for (const [caveId, grouped] of groups) {
+          order += 1
+          const ordered = [...grouped].sort((a, b) => a.mergeOrder - b.mergeOrder)
+          const anchorValues = ordered.map((sketch) => stakeToNumber(sketch.anchorStake))
+          const start = Math.min(...anchorValues)
+          const end = Math.max(...anchorValues)
+          legacySheets.push({
+            id: `sheet_legacy_${caveId === '__legacy_orphan__' ? 'orphan' : caveId}`,
+            caveId: caveId === '__legacy_orphan__' ? '' : caveId,
+            code: `初始图幅-${String(order).padStart(2, '0')}`,
+            segmentId: ordered[0]?.segmentId ?? '',
+            sketchIds: ordered.map((sketch) => sketch.id),
+            // 旧草图只登记了锚点，起止桩号以锚点最小/最大值兜底存底，交给制图组认账
+            startStake: anchorToStake(start),
+            endStake: anchorToStake(end),
+            offset: 0,
+            snapped: false,
+            mergeOrder: order,
+            status: 'pending',
+            issues: [],
+            isLegacyInitial: true,
+            acknowledgedBy: '',
+            acknowledgedAt: '',
+            note: '由旧版草图自动归入的待确认初始图幅，需制图组逐张认过后才进正式拼合',
+            createdAt: now,
+            updatedAt: now
+          })
+        }
+        if (legacySheets.length > 0) {
+          await tx.table<MapSheet, string>('sheets').bulkPut(legacySheets)
+        }
+      })
   }
 }
+
+/** 旧草图锚点数值回写成桩号文本（Kx+xxx） */
+function anchorToStake(value: number): string {
+  const km = Math.floor(Math.max(0, value) / 1000)
+  const m = Math.max(0, value) % 1000
+  return `K${km}+${String(Math.floor(m)).padStart(3, '0')}`
+}
+
 
 export const db = new CaveSurveyDb()
 
@@ -117,7 +184,7 @@ export async function seedDemoData(): Promise<void> {
     latitude: 25.8123,
     altitude: 986.4,
     layer: '二叠系下统栖霞组灰岩',
-    knownLength: 1240,
+    knownLength: 195,
     startDate: today,
     surveyor: '陆昀',
     climateNote: '洞内 16.2℃，相对湿度 94%，中段有滴水',
@@ -209,6 +276,51 @@ export async function seedDemoData(): Promise<void> {
       mergeOrder: 2,
       anchorStake: 'K0+120',
       imageNote: '竖井剖面草图，标注三处锚点'
+    }
+  ])
+
+  // 制图侧两张图幅均已认过：自持桩号/偏移/吸附，测量侧再复测也不回退这两张
+  const now = new Date().toISOString()
+  await db.sheets.bulkPut([
+    {
+      id: 'sheet_demo_001',
+      caveId,
+      code: 'T-01',
+      segmentId: segmentA,
+      sketchIds: ['sk_demo_001'],
+      startStake: 'K0+000',
+      endStake: 'K0+120',
+      offset: 0,
+      snapped: true,
+      mergeOrder: 1,
+      status: 'confirmed',
+      issues: [],
+      isLegacyInitial: false,
+      acknowledgedBy: '覃羽',
+      acknowledgedAt: now,
+      note: '入口廊道图幅',
+      createdAt: now,
+      updatedAt: now
+    },
+    {
+      id: 'sheet_demo_002',
+      caveId,
+      code: 'T-02',
+      segmentId: segmentB,
+      sketchIds: ['sk_demo_002'],
+      startStake: 'K0+120',
+      endStake: 'K0+195',
+      offset: Math.round(120 * 1.6),
+      snapped: true,
+      mergeOrder: 2,
+      status: 'confirmed',
+      issues: [],
+      isLegacyInitial: false,
+      acknowledgedBy: '覃羽',
+      acknowledgedAt: now,
+      note: '竖井剖面图幅',
+      createdAt: now,
+      updatedAt: now
     }
   ])
 }

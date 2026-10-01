@@ -17,12 +17,3 @@ export interface Sketch {
   /** 图片数据说明 */
   imageNote: string
 }
-
-/** 图幅拼合对齐结果 */
-export interface MergeItem {
-  sketchId: string
-  /** 对齐后的横向偏移（单位：格） */
-  offset: number
-  /** 是否已吸附到锚点 */
-  snapped: boolean
-}

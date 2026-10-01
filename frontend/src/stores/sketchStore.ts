@@ -24,6 +24,13 @@ export const sketchStore = createStore<SketchState>((set, get) => ({
     await get().hydrate()
   },
   remove: async (id) => {
+    // 草图是制图侧资产，删除时仅把它从同属制图侧的图幅归属中摘掉，不碰测量侧
+    const holdingSheets = (await db.sheets.toArray()).filter((sheet) => sheet.sketchIds.includes(id))
+    await Promise.all(
+      holdingSheets.map((sheet) =>
+        syncPut(db.sheets, { ...sheet, sketchIds: sheet.sketchIds.filter((sketchId) => sketchId !== id) })
+      )
+    )
     await syncDelete(db.sketches, id)
     await get().hydrate()
   },

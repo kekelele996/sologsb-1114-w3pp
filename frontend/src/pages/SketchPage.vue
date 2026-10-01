@@ -9,6 +9,7 @@ import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { sketchStore } from '@/stores/sketchStore'
+import { sheetStore } from '@/stores/sheetStore'
 import { toRadians } from '@/utils/survey'
 import { uid } from '@/utils/id'
 
@@ -16,6 +17,7 @@ const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
 const sketchState = useStore(sketchStore)
+const sheetState = useStore(sheetStore)
 
 const CANVAS_W = 760
 const CANVAS_H = 440
@@ -135,6 +137,11 @@ const segmentSketches = computed(() =>
     .filter((sketch) => sketch.segmentId === selectedSegmentId.value)
     .sort((a, b) => a.mergeOrder - b.mergeOrder)
 )
+
+/** 草图归属的制图侧图幅（草图删了会自动从图幅摘除） */
+function owningSheet(sketchId: string) {
+  return sheetState.sheets.find((sheet) => sheet.sketchIds.includes(sketchId))
+}
 
 async function submit(): Promise<void> {
   if (!selectedSegmentId.value) {
@@ -293,6 +300,21 @@ async function removeSketch(sketch: Sketch): Promise<void> {
       </el-table-column>
       <el-table-column prop="author" label="绘制人" width="100" />
       <el-table-column prop="anchorStake" label="锚点桩号" width="130" />
+      <el-table-column label="归属图幅" width="170">
+        <template #default="{ row }: { row: Sketch }">
+          <template v-if="owningSheet(row.id)">
+            <el-tag
+              :type="owningSheet(row.id)?.status === 'confirmed' ? 'success' : 'warning'"
+              size="small"
+              effect="plain"
+            >
+              {{ owningSheet(row.id)?.code }}
+              （{{ owningSheet(row.id)?.status === 'confirmed' ? '已认过' : '待核' }}）
+            </el-tag>
+          </template>
+          <span v-else class="muted">未归入图幅</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="imageNote" label="图片数据说明" min-width="200" show-overflow-tooltip />
       <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }: { row: Sketch }">
@@ -322,5 +344,8 @@ async function removeSketch(sketch: Sketch): Promise<void> {
   display: flex;
   gap: 8px;
   padding-left: 90px;
+}
+.muted {
+  color: #9aa7b3;
 }
 </style>
